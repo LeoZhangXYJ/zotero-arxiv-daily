@@ -10,6 +10,7 @@ import multiprocessing
 import os
 from queue import Empty
 from time import sleep
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, TypeVar
 from loguru import logger
 import requests
@@ -128,6 +129,32 @@ class ArxivRetriever(BaseRetriever):
             for i in feed.entries
             if i.get("arxiv_announce_type", "new") in allowed_announce_types
         ]
+
+        # arXiv RSS can be empty on weekends or holidays. Fall back to the
+        # API and fetch papers submitted during the previous seven days so a
+        # manual workflow run can still produce recommendations.
+        if not all_paper_ids:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=7)
+            date_query = (
+                f"submittedDate:[{start:%Y%m%d%H%M} TO {end:%Y%m%d%H%M}]"
+            )
+            category_query = " OR ".join(
+                f"cat:{category}" for category in self.config.source.arxiv.category
+            )
+            fallback_query = f"({category_query}) AND {date_query}"
+            logger.info(
+                "arXiv RSS is empty; falling back to API for papers submitted "
+                "during the previous 7 days"
+            )
+            search = arxiv.Search(
+                query=fallback_query,
+                max_results=10 if self.config.executor.debug else 100,
+                sort_by=arxiv.SortCriterion.SubmittedDate,
+                sort_order=arxiv.SortOrder.Descending,
+            )
+            return list(client.results(search))
+
         if self.config.executor.debug:
             all_paper_ids = all_paper_ids[:10]
 
